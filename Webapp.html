@@ -1,1 +1,439 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>プロシージャル和柄ジェネレーター</title>
+  <style>
+    :root {
+      --bg: #f8f6f1;
+      --panel: #ffffff;
+      --muted: #666;
+      --text: #111;
+      --border: #e9e1d6;
+    }
 
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    }
+
+    body {
+      padding: 20px;
+    }
+
+    .app {
+      display: flex;
+      gap: 20px;
+      height: calc(100vh - 40px);
+      min-height: 640px;
+    }
+
+    .panel {
+      width: 330px;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px 16px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.07);
+      backdrop-filter: blur(5px);
+    }
+
+    .controls {
+      overflow: auto;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: 1.05rem;
+      letter-spacing: 0.05em;
+    }
+
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    select,
+    input[type="text"],
+    input[type="number"],
+    input[type="range"],
+    input[type="color"] {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+
+    input[type="color"] {
+      min-height: 42px;
+      padding: 4px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .row.compact {
+      grid-template-columns: 1fr auto;
+      align-items: center;
+    }
+
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      background: #161616;
+      color: white;
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      transition: transform 0.2s ease, opacity 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      opacity: 0.95;
+    }
+
+    .secondary {
+      background: #e9dcc7;
+      color: #2a1d12;
+    }
+
+    .preview-wrap {
+      flex: 1;
+      background: rgba(255,255,255,0.75);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: inset 0 0 0 1px rgba(17,17,17,0.02);
+      overflow: hidden;
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #f8f6f1;
+    }
+
+    .swatches {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .swatch {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid rgba(0,0,0,0.08);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.3);
+    }
+
+    .footer-note {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        padding: 12px;
+      }
+
+      .app {
+        flex-direction: column;
+        height: auto;
+      }
+
+      .panel {
+        width: 100%;
+      }
+
+      .preview-wrap {
+        min-height: 520px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="panel controls">
+      <h1>プロシージャル和柄</h1>
+
+      <label for="pattern">模様</label>
+      <select id="pattern">
+        <option value="seigaiha">青海波</option>
+        <option value="asanoha">麻の葉</option>
+        <option value="kikko">亀甲</option>
+        <option value="shippo">七宝</option>
+      </select>
+
+      <label for="scale">タイルサイズ</label>
+      <input id="scale" type="range" min="20" max="180" value="80" />
+
+      <label for="stroke">線の太さ</label>
+      <input id="stroke" type="range" min="1" max="8" value="2" />
+
+      <label>配色</label>
+      <div class="row">
+        <input id="bg" type="color" value="#f8f6f1" />
+        <input id="main" type="color" value="#1b3c7a" />
+        <input id="accent" type="color" value="#d84f3d" />
+      </div>
+
+      <label for="seed">シード</label>
+      <div class="row compact">
+        <input id="seed" type="text" placeholder="例: sakura" />
+        <button class="secondary" id="randomSeed" type="button">乱数</button>
+      </div>
+
+      <label for="size">サイズ</label>
+      <input id="size" type="number" min="300" max="1600" value="960" />
+
+      <div class="row" style="margin-top: 16px;">
+        <button id="renderBtn" type="button">描画</button>
+        <button id="downloadBtn" class="secondary" type="button">PNG保存</button>
+      </div>
+
+      <div class="swatches">
+        <div class="swatch" id="swBg" style="background:#f8f6f1"></div>
+        <div class="swatch" id="swMain" style="background:#1b3c7a"></div>
+        <div class="swatch" id="swAccent" style="background:#d84f3d"></div>
+      </div>
+
+      <div class="footer-note">
+        和柄のパターンを生成し、プリントや壁紙、Web背景に使えるようにしています。
+      </div>
+    </aside>
+
+    <main class="preview-wrap">
+      <canvas id="canvas" width="960" height="960"></canvas>
+    </main>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    const els = {
+      pattern: document.getElementById('pattern'),
+      scale: document.getElementById('scale'),
+      stroke: document.getElementById('stroke'),
+      bg: document.getElementById('bg'),
+      main: document.getElementById('main'),
+      accent: document.getElementById('accent'),
+      seed: document.getElementById('seed'),
+      size: document.getElementById('size'),
+      renderBtn: document.getElementById('renderBtn'),
+      downloadBtn: document.getElementById('downloadBtn'),
+      randomSeed: document.getElementById('randomSeed'),
+      swBg: document.getElementById('swBg'),
+      swMain: document.getElementById('swMain'),
+      swAccent: document.getElementById('swAccent')
+    };
+
+    function hashString(str) {
+      let h = 2166136261;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return h >>> 0;
+    }
+
+    function mulberry32(a) {
+      return function() {
+        let t = a += 0x6D2B79F5;
+        t = Math.imul(t ^ t >>> 15, t | 1);
+        t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+
+    function seededRandom(seedText) {
+      if (!seedText) {
+        return mulberry32(Math.floor(Math.random() * 0xffffffff));
+      }
+      return mulberry32(hashString(seedText));
+    }
+
+    function clearCanvas(bg) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function drawHex(cx, cy, r) {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const ang = (Math.PI / 3) * i - Math.PI / 6;
+        const x = cx + Math.cos(ang) * r;
+        const y = cy + Math.sin(ang) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    function drawSeigaiha(rng, size, main, accent, stroke) {
+      const rows = Math.ceil(canvas.height / (size * 1.2)) + 2;
+      const cols = Math.ceil(canvas.width / size) + 2;
+      ctx.lineWidth = stroke;
+      ctx.lineCap = 'round';
+
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const x = col * size - (row % 2 ? size / 2 : 0);
+          const y = row * size * 0.55;
+          ctx.strokeStyle = rng() > 0.45 ? main : accent;
+          ctx.beginPath();
+          ctx.arc(x, y, size * 0.85, 0, Math.PI, true);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function drawAsanoha(rng, size, main, accent, stroke) {
+      const cols = Math.ceil(canvas.width / (size * 1.2)) + 2;
+      const rows = Math.ceil(canvas.height / (size * 0.9)) + 2;
+      ctx.lineWidth = stroke;
+
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const x = col * size * 0.9;
+          const y = row * size * 0.8 + (col % 2 ? size * 0.45 : 0);
+          const cx = x + size * 0.35;
+          const cy = y + size * 0.35;
+          const ray = size * 0.52;
+          ctx.strokeStyle = rng() > 0.55 ? main : accent;
+          for (let i = 0; i < 6; i++) {
+            const ang = (Math.PI / 3) * i;
+            const px = cx + Math.cos(ang) * ray;
+            const py = cy + Math.sin(ang) * ray;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(px, py);
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
+    function drawKikko(rng, size, main, accent, stroke) {
+      const hexSize = size * 0.5;
+      const stepX = hexSize * 1.5;
+      const stepY = Math.sqrt(3) * hexSize;
+      ctx.lineWidth = stroke;
+
+      for (let y = -hexSize; y < canvas.height + hexSize; y += stepY) {
+        for (let x = -hexSize; x < canvas.width + hexSize; x += stepX) {
+          const offset = (Math.round(x / stepX) % 2 === 0) ? 0 : stepY / 2;
+          ctx.strokeStyle = rng() > 0.72 ? accent : main;
+          drawHex(x + stepX * 0.25, y + offset, hexSize);
+        }
+      }
+    }
+
+    function drawShippo(rng, size, main, accent, stroke) {
+      const dotR = size * 0.28;
+      const step = size * 1.1;
+      ctx.lineWidth = stroke;
+
+      for (let y = -dotR; y < canvas.height + dotR; y += step) {
+        for (let x = -dotR; x < canvas.width + dotR; x += step) {
+          const cx = x + (Math.round(y / step) % 2 ? step * 0.5 : 0);
+          ctx.strokeStyle = rng() > 0.5 ? main : accent;
+          ctx.beginPath();
+          ctx.arc(cx, y + dotR * 0.8, dotR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function renderPattern() {
+      const pattern = els.pattern.value;
+      const scale = parseFloat(els.scale.value);
+      const stroke = parseFloat(els.stroke.value);
+      const bg = els.bg.value;
+      const main = els.main.value;
+      const accent = els.accent.value;
+      const size = parseInt(els.size.value, 10) || 960;
+      const seedText = els.seed.value.trim();
+      const rng = seededRandom(seedText);
+
+      canvas.width = size;
+      canvas.height = size;
+      clearCanvas(bg);
+
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      switch (pattern) {
+        case 'seigaiha':
+          drawSeigaiha(rng, scale, main, accent, stroke);
+          break;
+        case 'asanoha':
+          drawAsanoha(rng, scale, main, accent, stroke);
+          break;
+        case 'kikko':
+          drawKikko(rng, scale, main, accent, stroke);
+          break;
+        case 'shippo':
+          drawShippo(rng, scale, main, accent, stroke);
+          break;
+      }
+
+      els.swBg.style.background = bg;
+      els.swMain.style.background = main;
+      els.swAccent.style.background = accent;
+    }
+
+    function randomSeed() {
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      let val = '';
+      for (let i = 0; i < 8; i++) {
+        val += chars[Math.floor(Math.random() * chars.length)];
+      }
+      els.seed.value = val;
+      renderPattern();
+    }
+
+    function savePNG() {
+      const link = document.createElement('a');
+      link.download = 'wagara-pattern.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+
+    els.renderBtn.addEventListener('click', renderPattern);
+    els.downloadBtn.addEventListener('click', savePNG);
+    els.randomSeed.addEventListener('click', randomSeed);
+
+    ['pattern', 'scale', 'stroke', 'bg', 'main', 'accent', 'size'].forEach((id) => {
+      els[id].addEventListener('input', renderPattern);
+      els[id].addEventListener('change', renderPattern);
+    });
+
+    els.seed.addEventListener('change', renderPattern);
+
+    renderPattern();
+  </script>
+</body>
+</html>
