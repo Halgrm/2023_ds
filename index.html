@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>芸術工学部 小倉悠悟 — PROCEDURAL</title>
+<meta name="description" content="芸術工学部・小倉悠悟によるプロシージャル・パターン。同心円、放射する文字、縞の字形が止まらずに流れ続ける。">
+<meta name="theme-color" content="#f3f2ed">
+<meta property="og:title" content="芸術工学部 小倉悠悟 — PROCEDURAL">
+<meta property="og:description" content="手続きから生まれ、流れ続ける模様。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@400;700&family=Noto+Sans+JP:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+  :root { --paper: #f3f2ed; --ink: #0b0b0b; }
+  html, body { margin: 0; height: 100%; background: var(--paper); overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: manipulation; }
+  body.inverted { background: var(--ink); }
+  body.inverted canvas { filter: invert(1); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<h1 class="sr">芸術工学部 小倉悠悟 — PROCEDURAL / プロシージャル・パターン</h1>
+<p class="sr">クリック（タップ）で模様を再生成、S キーで PNG 保存、スペースで一時停止、I キーで反転。</p>
+<canvas id="c" aria-label="流れ続けるプロシージャル模様"></canvas>
+
+<script>
+(() => {
+'use strict';
+
+/* ───────────── 文言設定（ここを書き換えれば全体に反映） ───────────── */
+const CFG = {
+  faculty: '芸術工学部',
+  name: '小倉悠悟',
+  facultyLatin: 'GEIJUTSU KOGAKU',
+  nameLatin: 'OGURA YUGO',
+  title: 'PROCEDURAL',
+  subtitle: 'PATTERN IN MOTION',
+  glyphs: ['芸', '工'],
+  statement: [
+    '手続きを主旨とし、',
+    '反復を源とし、時間を経路として、',
+    '線は流れ、模様は終わらない。'
+  ],
+  verse: [
+    '線は、時の痕跡である。',
+    '円は、反復の器である。',
+    '一つの種から、',
+    '無数の模様が生まれ、',
+    '同じ模様は二度と現れない。',
+    '流れるものは、',
+    '止まらずに形をなす。',
+    '芸術と工学のあいだに、',
+    '模様は立ち上がる。'
+  ],
+  sceneSeconds: 12
+};
+
+const PAPER = '#f3f2ed';
+const INK = '#0b0b0b';
+const TAU = Math.PI * 2;
+const F_JP = '"Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif';
+const F_LAT = '"Archivo Black", "Arial Black", Impact, sans-serif';
+const F_MONO = '"JetBrains Mono", ui-monospace, Menlo, monospace';
+
+const CORPUS_JP = (CFG.verse.join('') + CFG.statement.join('')).replace(/\s/g, '');
+const CORPUS_LAT = `${CFG.facultyLatin} — ${CFG.nameLatin} — ${CFG.title} ${CFG.subtitle} — `;
+const TOKENS = [CFG.faculty, CFG.name, CFG.title, CFG.facultyLatin, CFG.nameLatin, CFG.subtitle,
+  '手続き', '模様', '反復', '時間', '線', '円', '律動', '構造', '設計', '芸術', '工学',
+  'GENERATIVE', 'PATTERN', 'SEED', 'LOOP', 'NOISE', 'ARC', 'RING'];
+
+/* ───────────── 乱数・ノイズ ───────────── */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function hash(n) {
+  n = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); n ^= n >>> 13;
+  n = Math.imul(n, 0xc2b2ae35); n ^= n >>> 16;
+  return (n >>> 0) / 4294967296;
+}
+function noise1(x, s = 0) {
+  const i = Math.floor(x), f = x - i, u = f * f * (3 - 2 * f);
+  return hash(i + s * 7919) * (1 - u) + hash(i + 1 + s * 7919) * u;
+}
+const ease = f => f < .5 ? 4 * f * f * f : 1 - Math.pow(-2 * f + 2, 3) / 2;
+const hex4 = R => (R() * 0xffff | 0).toString(16).toUpperCase().padStart(4, '0');
+
+/* ───────────── キャンバス ───────────── */
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1, U = 1, portrait = false;
+let L = {};            // レイアウト
+let S = null;          // シーン
+let glyphs = [];
+let seed = (Math.random() * 0xffffffff) >>> 0;
+let clock = 0, sceneStart = 0, frame = 0, fps = 60, paused = false, last = 0;
+let mx = .5, my = .5, tmx = .5, tmy = .5;
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function setT(x, y, a = 0) {
+  const c = Math.cos(a) * DPR, s = Math.sin(a) * DPR;
+  ctx.setTransform(c, s, -s, c, x * DPR, y * DPR);
+}
+const vis = (x, y, m) => x > -m && x < W + m && y > -m && y < H + m;
+
+/* ───────────── 同心円システム ───────────── */
+function makeSystem(R, o) {
+  const rings = [], rays = [];
+  let r = o.rMin, textCount = 0;
+  const bands = (o.rayBands || []).slice();
+  while (r < o.rMax) {
+    if (bands.length && r >= bands[0][0]) {
+      const bw = bands.shift()[1];
+      rays.push(makeRays(R, r, r + bw));
+      r += bw + 6 * U;
+      continue;
+    }
+    const q = R();
+    let type;
+    if (q < .42) type = 'solid';
+    else if (q < .58) type = 'ticks';
+    else if (q < .70) type = 'dash';
+    else if (q < .80 && textCount < o.maxText) { type = 'text'; textCount++; }
+    else type = 'hair';
+
+    let w;
+    if (type === 'hair') w = Math.max(1, 1.4 * U);
+    else if (type === 'text') w = Math.max(9, 13 * U);
+    else if (type === 'ticks') w = (10 + R() * 30) * U;
+    else w = [2, 4, 7, 12, 18, 26, 38, 52][Math.floor(Math.pow(R(), 1.4) * 8)] * U * o.scale;
+
+    const segs = [];
+    if (type === 'text' || R() < .2) segs.push([0, TAU]);
+    else {
+      const n = 1 + Math.floor(R() * 4);
+      let a = R() * TAU;
+      for (let i = 0; i < n; i++) {
+        const l = .2 + R() * R() * 2.6;
+        segs.push([a, l]);
+        a += l + .08 + R() * 1.2;
+      }
+    }
+    rings.push({
+      r: r + w / 2, w, type, segs,
+      speed: (R() - .5) * .22 * (R() < .15 ? 4 : 1),
+      phase: R() * TAU,
+      step: R() < .3 ? .8 + R() * 2.4 : 0,
+      dash: [(2 + R() * 20) * U, (2 + R() * 14) * U],
+      dspeed: (R() - .5) * 60 * U,
+      sp: (3.5 + R() * 6) * U,
+      ruler: R() < .5,
+      tw: Math.max(1, (1 + R() * 2.2) * U),
+      str: R() < .5 ? CORPUS_JP : CORPUS_LAT,
+      off: Math.floor(R() * 1000)
+    });
+    r += w + (R() < .35 ? 2 * U : (3 + R() * R() * 30) * U);
+  }
+  return { cx: o.cx, cy: o.cy, rings, rays, par: o.par };
+}
+
+function makeRays(R, r0, r1) {
+  const fs = Math.max(7, 8.5 * U);
+  const n = Math.max(24, Math.floor(TAU * r0 / (fs * 1.32)));
+  const bw = r1 - r0;
+  ctx.font = `400 ${fs}px ${F_JP}`;
+  const items = [];
+  let run = 0, runType = 0;
+  for (let i = 0; i < n; i++) {
+    if (run <= 0) { run = 2 + Math.floor(R() * 14); runType = R(); }
+    run--;
+    const len = bw * (.35 + .65 * Math.pow(R(), .5));
+    if (runType < .16) {
+      items.push({ bar: true, len, k: .5 + R() * .5 });
+    } else if (runType < .22) {
+      items.push(null);
+    } else {
+      let s = '';
+      while (s.length < 60) s += TOKENS[Math.floor(R() * TOKENS.length)] + (R() < .3 ? ' ' + hex4(R) + ' ' : ' ');
+      let cut = Math.ceil(len / (fs * .7));
+      s = s.slice(0, cut);
+      while (s.length > 1 && ctx.measureText(s).width > len) s = s.slice(0, -1);
+      items.push({ s });
+    }
+  }
+  return { r0, r1, n, fs, items, speed: (R() < .5 ? -1 : 1) * (.012 + R() * .02), phase: R() * TAU };
+}
+
+function ringRot(g, t) {
+  if (!g.step) return g.phase + g.speed * t;
+  const p = g.step, k = Math.floor(t / p), f = t / p - k;
+  return g.phase + g.speed * p * (k + ease(Math.min(1, f / .35))) * 1.6;
+}
+
+function drawSystem(sys, t) {
+  const cx = sys.cx + (mx - .5) * -40 * U * sys.par + (noise1(t * .05, 3) - .5) * 60 * U;
+  const cy = sys.cy + (my - .5) * -40 * U * sys.par + (noise1(t * .05, 9) - .5) * 60 * U;
+  ctx.fillStyle = INK; ctx.strokeStyle = INK; ctx.lineCap = 'butt';
+
+  for (const g of sys.rings) {
+    const rot = ringRot(g, t);
+    if (g.r - g.w > Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) + 10) continue;
+    setT(0, 0);
+    if (g.type === 'solid' || g.type === 'hair') {
+      ctx.lineWidth = g.w;
+      ctx.beginPath();
+      for (const [a, l] of g.segs) {
+        const s = a + rot;
+        ctx.moveTo(cx + Math.cos(s) * g.r, cy + Math.sin(s) * g.r);
+        ctx.arc(cx, cy, g.r, s, s + l);
+      }
+      ctx.stroke();
+    } else if (g.type === 'dash') {
+      ctx.lineWidth = g.w;
+      ctx.setLineDash(g.dash);
+      ctx.lineDashOffset = -t * g.dspeed;
+      ctx.beginPath();
+      for (const [a, l] of g.segs) {
+        const s = a + rot;
+        ctx.moveTo(cx + Math.cos(s) * g.r, cy + Math.sin(s) * g.r);
+        ctx.arc(cx, cy, g.r, s, s + l);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (g.type === 'ticks') {
+      const da = g.sp / g.r, ri = g.r - g.w / 2;
+      ctx.lineWidth = g.tw;
+      ctx.beginPath();
+      for (const [a, l] of g.segs) {
+        const i0 = Math.ceil(a / da), i1 = Math.floor((a + l) / da);
+        for (let i = i0; i <= i1; i++) {
+          const ang = i * da + rot, c = Math.cos(ang), s = Math.sin(ang);
+          const x0 = cx + c * ri, y0 = cy + s * ri;
+          if (!vis(x0, y0, g.w)) continue;
+          const k = g.ruler ? (i % 10 === 0 ? 1 : i % 5 === 0 ? .66 : .4) : 1;
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x0 + c * g.w * k, y0 + s * g.w * k);
+        }
+      }
+      ctx.stroke();
+    } else if (g.type === 'text') {
+      const fs = g.w * .82;
+      ctx.font = `700 ${fs}px ${g.str === CORPUS_JP ? F_JP : F_MONO}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const n = Math.max(12, Math.floor(TAU * g.r / (fs * (g.str === CORPUS_JP ? 1.12 : .72))));
+      const da = TAU / n, len = g.str.length;
+      for (let i = 0; i < n; i++) {
+        const ang = i * da + rot;
+        const x = cx + Math.cos(ang) * g.r, y = cy + Math.sin(ang) * g.r;
+        if (!vis(x, y, fs)) continue;
+        setT(x, y, ang + Math.PI / 2);
+        ctx.fillText(g.str[(i + g.off) % len], 0, 0);
+      }
+    }
+  }
+
+  // 放射する文字列
+  for (const b of sys.rays) {
+    const rot = b.phase + b.speed * t;
+    const da = TAU / b.n;
+    ctx.font = `400 ${b.fs}px ${F_JP}`;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < b.n; i++) {
+      const it = b.items[i];
+      if (!it) continue;
+      const ang = i * da + rot, c = Math.cos(ang), s = Math.sin(ang);
+      const x0 = cx + c * b.r0, y0 = cy + s * b.r0;
+      const x1 = cx + c * b.r1, y1 = cy + s * b.r1;
+      if (!vis(x0, y0, 4) && !vis(x1, y1, 4) && !vis((x0 + x1) / 2, (y0 + y1) / 2, 4)) continue;
+      setT(x0, y0, ang);
+      if (it.bar) ctx.fillRect(0, -b.fs * .45 * it.k, it.len, b.fs * .9 * it.k);
+      else ctx.fillText(it.s, 0, 0);
+    }
+  }
+  ctx.textAlign = 'left';
+  return { cx, cy };
+}
+
+/* ───────────── 縞の字形 ───────────── */
+function makeGlyph(ch, size) {
+  const s = Math.max(16, Math.ceil(size * DPR));
+  const mk = () => { const c = document.createElement('canvas'); c.width = c.height = s; return c; };
+  const m = mk(), h = mk(), tmp = mk();
+  const font = `900 ${s * .9}px ${F_JP}`;
+  const mg = m.getContext('2d');
+  mg.font = font; mg.textAlign = 'center'; mg.textBaseline = 'middle';
+  mg.fillStyle = '#000'; mg.fillText(ch, s / 2, s / 2 + s * .04);
+  const hg = h.getContext('2d');
+  hg.font = font; hg.textAlign = 'center'; hg.textBaseline = 'middle';
+  hg.lineJoin = 'round'; hg.lineWidth = s * .035;
+  hg.strokeStyle = PAPER; hg.fillStyle = PAPER;
+  hg.strokeText(ch, s / 2, s / 2 + s * .04); hg.fillText(ch, s / 2, s / 2 + s * .04);
+  return { m, h, tmp, s, size };
+}
+
+function drawGlyph(G, x, y, t, mode, center, idx) {
+  const g = G.tmp.getContext('2d'), s = G.s;
+  g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, s, s);
+  g.fillStyle = INK; g.strokeStyle = INK;
+  if (mode === 0) {
+    // 呼吸する横縞
+    const p = s / 30, off = (t * 18 * DPR * U) % p;
+    for (let i = -1; i < 32; i++) {
+      const k = .38 + .44 * (.5 + .5 * Math.sin(i * .45 + t * 1.1 + idx));
+      g.fillRect(0, i * p + off, s, p * k);
+    }
+  } else {
+    // 背景の同心円と同じ中心で曲がる縞
+    const lx = (center.cx - (x - G.size / 2)) * DPR, ly = (center.cy - (y - G.size / 2)) * DPR;
+    const d = Math.hypot(lx - s / 2, ly - s / 2);
+    const p = s / 26, off = (t * 22 * DPR * U) % p;
+    const r0 = Math.max(p, d - s * .75), r1 = d + s * .75;
+    for (let r = r0 - off, i = 0; r < r1; r += p, i++) {
+      const k = .38 + .44 * (.5 + .5 * Math.sin(i * .6 - t * 1.3 + idx));
+      g.lineWidth = p * k;
+      g.beginPath(); g.arc(lx, ly, Math.max(1, r), 0, TAU); g.stroke();
+    }
+  }
+  g.globalCompositeOperation = 'destination-in';
+  g.drawImage(G.m, 0, 0);
+  setT(x, y);
+  ctx.drawImage(G.h, -G.size / 2, -G.size / 2, G.size, G.size);
+  ctx.drawImage(G.tmp, -G.size / 2, -G.size / 2, G.size, G.size);
+}
+
+/* ───────────── タイポグラフィ ───────────── */
+function paperText(str, x, y, lw) {
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = lw; ctx.strokeStyle = PAPER; ctx.strokeText(str, x, y);
+  ctx.fillStyle = INK; ctx.fillText(str, x, y);
+}
+
+function stadium(x, cy, w, h, lw, halo) {
+  const r = (h - lw) / 2;
+  const path = () => {
+    ctx.beginPath();
+    ctx.moveTo(x + r + lw / 2, cy - r);
+    ctx.lineTo(x + w - r - lw / 2, cy - r);
+    ctx.arc(x + w - r - lw / 2, cy, r, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x + r + lw / 2, cy + r);
+    ctx.arc(x + r + lw / 2, cy, r, Math.PI / 2, Math.PI * 1.5);
+    ctx.closePath();
+  };
+  path();
+  ctx.lineWidth = lw + halo; ctx.strokeStyle = PAPER; ctx.stroke();
+  ctx.lineWidth = lw; ctx.strokeStyle = INK; ctx.stroke();
+}
+
+function wordLen(word, size, track) {
+  ctx.font = `${size}px ${F_LAT}`;
+  let px = 0;
+  for (const ch of word) {
+    if (ch === 'O') px += size * 1.3 + track;
+    else if (ch === ' ') px += size * .4;
+    else px += ctx.measureText(ch).width + track;
+  }
+  return px - track;
+}
+
+function bigWord(word, x, y, size, angle, track, t, salt) {
+  setT(x, y, angle);
+  ctx.font = `${size}px ${F_LAT}`;
+  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  const cap = size * .72, halo = size * .14;
+  let px = 0, i = 0;
+  for (const ch of word) {
+    // 時々一文字だけ横にずれる
+    const j = noise1(t * .7 + i * 3.1, salt) > .86 ? (noise1(t * 5 + i, salt + 1) - .5) * size * .5 : 0;
+    if (ch === 'O') {
+      const w = size * 1.3;
+      stadium(px, -cap / 2 + j, w, cap, size * .15, halo);
+      px += w + track;
+    } else if (ch === ' ') {
+      px += size * .4;
+    } else {
+      paperText(ch, px, j, halo);
+      px += ctx.measureText(ch).width + track;
+    }
+    i++;
+  }
+}
+
+function drawTitle(t) {
+  const { pad, T } = L;
+  setT(0, 0);
+  ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+  ctx.font = `900 ${T}px ${F_JP}`;
+  const tw = Math.max(ctx.measureText(CFG.faculty).width, ctx.measureText(CFG.name).width);
+  ctx.fillStyle = PAPER;
+  ctx.fillRect(0, 0, pad + tw + T * .3, pad + T * 2.45);
+  ctx.fillStyle = INK;
+  ctx.fillText(CFG.faculty, pad, pad);
+  ctx.fillText(CFG.name, pad, pad + T * 1.18);
+
+  // 声明文
+  ctx.font = `700 ${L.stSize}px ${F_JP}`;
+  CFG.statement.forEach((s, i) => {
+    const y = L.stY + i * L.stSize * 2.05;
+    const w = ctx.measureText(s).width;
+    ctx.fillStyle = PAPER; ctx.fillRect(L.stX - 4, y - 3, w + 8, L.stSize + 7);
+    ctx.fillStyle = INK; ctx.fillText(s, L.stX, y);
+  });
+
+  // 詩
+  ctx.font = `400 ${L.vSize}px ${F_JP}`;
+  const n = CFG.verse.length;
+  const lit = Math.floor(t * 1.4) % (n + 4);
+  CFG.verse.forEach((s, i) => {
+    const y = L.vY + i * L.vSize * 2;
+    const w = ctx.measureText(s).width;
+    ctx.fillStyle = i === lit ? INK : PAPER;
+    ctx.fillRect(L.vX - 3, y - 3, w + 6, L.vSize + 6);
+    ctx.fillStyle = i === lit ? PAPER : INK;
+    ctx.fillText(s, L.vX, y);
+  });
+}
+
+function drawBigType(t) {
+  const { pad } = L;
+  // 右端：PROCEDURAL（上から下へ）
+  bigWord(CFG.title, L.rX, L.rY, L.rSize, Math.PI / 2, L.rSize * .04, t, 11);
+  // 左：OGURA YUGO（下から上へ）
+  bigWord(CFG.nameLatin, L.lX, L.lY, L.lSize, -Math.PI / 2, L.lSize * .04, t, 23);
+  // 中央：GEIJUTSU KOGAKU と黒い帯
+  const barLen = L.cLen * (.35 + .5 * noise1(t * .25, 5));
+  setT(0, 0); ctx.fillStyle = INK;
+  ctx.fillRect(L.cX - L.cCap * .62, L.cY - pad, L.cCap * .42, barLen + pad);
+  bigWord(CFG.facultyLatin, L.cX, L.cY, L.cSize, Math.PI / 2, L.cSize * .16, t, 37);
+}
+
+function drawMeta(t) {
+  const d = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const rows = [
+    ['生成日', `${d.getFullYear()}.${p2(d.getMonth() + 1)}.${p2(d.getDate())}`],
+    ['時刻', `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`],
+    ['乱数種', '#' + seed.toString(16).toUpperCase().padStart(8, '0')],
+    ['FRAME', String(frame).padStart(7, '0')],
+    ['FPS', fps.toFixed(1).padStart(5, '0')]
+  ];
+  const fs = L.mSize;
+  rows.forEach(([k, v], i) => {
+    const x = L.mX + i * fs * 1.75;
+    setT(x, L.mY, Math.PI / 2);
+    ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
+    ctx.font = `700 ${fs * .62}px ${F_JP}`;
+    paperText(k, 0, 0, fs * .5);
+    const kw = ctx.measureText(k).width;
+    ctx.font = `700 ${fs}px ${F_MONO}`;
+    paperText(v, kw + fs * .5, 0, fs * .5);
+  });
+}
+
+function drawColumns(t) {
+  const { x0, x1, y0, y1, fs } = L.cols;
+  if (x1 - x0 < fs * 2) return;
+  setT(0, 0);
+  ctx.fillStyle = PAPER; ctx.fillRect(x0 - fs * .4, y0 - fs * .4, x1 - x0 + fs * .8, y1 - y0 + fs * .8);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0 - fs * .4, y0, x1 - x0 + fs * .8, y1 - y0); ctx.clip();
+  ctx.fillStyle = INK; ctx.font = `400 ${fs}px ${F_JP}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const lh = fs * 1.15, colW = fs * 1.7;
+  const nc = Math.floor((x1 - x0) / colW), rows = Math.ceil((y1 - y0) / lh) + 1;
+  const len = CORPUS_JP.length;
+  for (let c = 0; c < nc; c++) {
+    const sp = (6 + (c * 7 % 5) * 4) * (c % 2 ? 1 : -1);
+    const scroll = t * sp;
+    const base = Math.floor(scroll / lh), off = scroll - base * lh;
+    const x = x1 - c * colW - fs * .5;   // 縦書き：右から左へ
+    for (let r = 0; r < rows; r++) {
+      const idx = ((base + r + c * 37) % len + len) % len;
+      const chr = CORPUS_JP[idx], y = y0 + r * lh - off;
+      // 縦組みの句読点は右上へ
+      if (chr === '、' || chr === '。') ctx.fillText(chr, x + fs * .55, y - fs * .55);
+      else ctx.fillText(chr, x, y);
+    }
+  }
+  ctx.restore();
+  ctx.textAlign = 'left';
+  // 罫線
+  setT(0, 0); ctx.fillRect(x0 - fs * .4, y0 - fs * .4, x1 - x0 + fs * .8, Math.max(1, U * 1.5));
+  ctx.fillRect(x0 - fs * .4, y1 + fs * .4, x1 - x0 + fs * .8, Math.max(1, U * 1.5));
+}
+
+function drawFooter(t) {
+  const { pad } = L;
+  const sp = (clock - sceneStart) / CFG.sceneSeconds;
+  setT(0, 0);
+  ctx.fillStyle = INK;
+  ctx.fillRect(0, H - 3 * Math.max(1, U), W * Math.min(1, sp), 3 * Math.max(1, U));
+  const fs = Math.max(9, 10 * U);
+  ctx.font = `400 ${fs}px ${F_MONO}`;
+  ctx.textBaseline = 'bottom'; ctx.textAlign = 'right';
+  const msg = portrait ? 'TAP — RESEED' : 'CLICK — RESEED   S — SAVE   SPACE — PAUSE   I — INVERT';
+  paperText(msg, L.rX - pad, H - pad * .7, fs * .6);
+  ctx.textAlign = 'left';
+}
+
+/* ───────────── 反転ブロックとグリッチ ───────────── */
+function drawInvertBlocks(t) {
+  const k = Math.floor(t * 1.6);
+  const R = mulberry32(seed ^ Math.imul(k, 2654435761));
+  if (R() < .45) return;
+  const n = 1 + Math.floor(R() * 3);
+  const gs = 24 * U;
+  setT(0, 0);
+  ctx.globalCompositeOperation = 'difference';
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < n; i++) {
+    const w = Math.round((1 + R() * 9) * gs), h = Math.round((.3 + R() * 3) * gs);
+    const x = Math.round(R() * W / gs) * gs, y = Math.round(R() * H / gs) * gs;
+    ctx.fillRect(x, y, w, h);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+const scratch = document.createElement('canvas');
+function glitch(intensity) {
+  let n = 0;
+  if (intensity > 0) n = Math.floor(4 + intensity * 14);
+  else if (Math.random() < .07) n = 1 + Math.floor(Math.random() * 3);
+  const slit = intensity > .3 || Math.random() < .025;
+  if (!n && !slit) return;
+  // 自分自身からの drawImage は毎回全面コピーになるので、一度だけ退避してから切り貼りする
+  const cw = cv.width, ch = cv.height;
+  if (scratch.width !== cw || scratch.height !== ch) { scratch.width = cw; scratch.height = ch; }
+  const sg = scratch.getContext('2d');
+  sg.clearRect(0, 0, cw, ch);
+  sg.drawImage(cv, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  for (let i = 0; i < n; i++) {
+    const y = Math.random() * ch, h = (2 + Math.random() * Math.random() * 60) * DPR * Math.max(1, U);
+    const dx = (Math.random() - .5) * (30 + intensity * 260) * DPR * U;
+    ctx.drawImage(scratch, 0, y, cw, h, dx, y, cw, h);
+  }
+  // スリットスキャン：1px の列を引き伸ばす
+  if (slit) {
+    const sx = Math.random() * cw, y0 = Math.random() * ch * .7;
+    const hh = (80 + Math.random() * 300) * DPR * U, ww = (20 + Math.random() * 140) * DPR * U;
+    ctx.drawImage(scratch, sx, y0, Math.max(1, DPR), hh, sx, y0, ww, hh);
+  }
+}
+
+/* ───────────── 構築 ───────────── */
+function layout() {
+  const pad = Math.max(14, 26 * U);
+  const T = Math.max(26, Math.min(portrait ? W * .085 : 52 * U, 96));
+  L.pad = pad; L.T = T;
+
+  L.stX = pad + T * 5.6;
+  L.stSize = Math.max(10, Math.min(T * .42, (W - L.stX - pad) / 17));
+  if (portrait && L.stSize < 11) { L.stX = pad; L.stSize = Math.max(10, Math.min(T * .42, (W - 2 * pad) / 17)); }
+  const stBelow = L.stX === pad;
+  L.stY = stBelow ? pad + T * 2.7 : pad;
+  const topBlock = pad + T * 2.45 + (stBelow ? L.stSize * 6.4 : 0);
+
+  L.vSize = Math.max(10, 12.5 * U);
+  L.vX = pad;
+  L.vY = topBlock + T * .5;
+  const vW = L.vSize * 14;
+
+  // 右端 PROCEDURAL
+  let rs = (H - pad * 2) / (wordLen(CFG.title, 100, 4) / 100);
+  rs = Math.min(rs, (portrait ? W * .1 : W * .085) / .72);
+  L.rSize = rs; L.rX = W - pad - rs * .72; L.rY = pad;
+
+  // 左 OGURA YUGO
+  let ls = (H * (portrait ? .4 : .55)) / (wordLen(CFG.nameLatin, 100, 4) / 100);
+  ls = Math.min(ls, (portrait ? W * .1 : W * .06) / .72);
+  L.lSize = ls;
+  L.lX = portrait ? pad + ls * .72 + 2 : pad + vW + 30 * U + ls * .72;
+  L.lY = H - pad * 2.2;
+
+  // 中央 GEIJUTSU KOGAKU
+  const cTop = portrait ? topBlock + pad : pad;
+  let cs = (H * (portrait ? .42 : .62)) / (wordLen(CFG.facultyLatin, 100, 16) / 100);
+  cs = Math.min(cs, W * .05 / .72);
+  L.cSize = cs; L.cCap = cs * .72; L.cY = cTop;
+  L.cX = W * (portrait ? .45 : .455);
+  L.cLen = wordLen(CFG.facultyLatin, cs, cs * .16);
+
+  // メタ情報
+  L.mSize = Math.max(10, Math.min(16 * U, 18));
+  L.mX = L.cX + L.cCap + L.mSize * 1.8;
+  L.mY = cTop;
+
+  // 縦組みの流れる本文
+  const fsC = Math.max(9, 10.5 * U);
+  const cx0 = L.mX + L.mSize * 1.75 * 5 + fsC;
+  const cx1 = Math.min(L.rX - fsC * 1.6, cx0 + fsC * 1.7 * 9);
+  L.cols = { x0: cx0, x1: cx1, y0: cTop + fsC * .4, y1: cTop + H * (portrait ? .26 : .36), fs: fsC };
+
+  // 字形
+  const mn = Math.min(W, H);
+  L.g = portrait
+    ? [{ x: W * .66, y: H * .79, s: W * .62 }, { x: W * .78, y: H * .45, s: W * .34 }]
+    : [{ x: W * .755, y: H * .73, s: mn * .52 }, { x: W * .3, y: H * .93, s: mn * .34 }];
+}
+
+function build() {
+  const R = mulberry32(seed);
+  const D = Math.hypot(W, H), mn = Math.min(W, H);
+  const A = makeSystem(R, {
+    cx: W * (portrait ? .05 + R() * .2 : .12 + R() * .2),
+    cy: H * (portrait ? .62 + R() * .2 : .95 + R() * .2),
+    rMin: mn * (.04 + R() * .08),
+    rMax: D * .9,
+    rayBands: [[mn * (.2 + R() * .12), mn * (.09 + R() * .05)], [mn * (.62 + R() * .2), mn * (.08 + R() * .06)]],
+    maxText: 3, scale: 1, par: 1
+  });
+  const B = makeSystem(R, {
+    cx: W * (.92 + R() * .12),
+    cy: H * (portrait ? .1 + R() * .1 : .12 + R() * .2),
+    rMin: mn * .03,
+    rMax: mn * (.32 + R() * .14),
+    rayBands: [[mn * (.12 + R() * .05), mn * .05]],
+    maxText: 1, scale: .7, par: -.6
+  });
+  S = { A, B, gmode: [R() < .5 ? 0 : 1, R() < .5 ? 0 : 1] };
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  U = Math.min(W, H) / 1000 * (W > H ? 1 : 1.25);
+  portrait = H > W * 1.15;
+  layout();
+  glyphs = CFG.glyphs.map((ch, i) => makeGlyph(ch, L.g[i].s));
+  build();
+}
+
+function reseed(burst = true) {
+  seed = (Math.random() * 0xffffffff) >>> 0;
+  build();
+  sceneStart = clock;
+  if (burst) burstUntil = clock + .45;
+}
+let burstUntil = 0;
+
+/* ───────────── ループ ───────────── */
+function render(t) {
+  setT(0, 0);
+  ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+
+  const cA = drawSystem(S.A, t);
+  drawSystem(S.B, t);
+
+  glyphs.forEach((G, i) => drawGlyph(G, L.g[i].x, L.g[i].y, t, S.gmode[i], cA, i));
+
+  drawBigType(t);
+  drawColumns(t);
+  drawMeta(t);
+  drawTitle(t);
+  drawInvertBlocks(t);
+
+  const bi = clock < burstUntil ? (burstUntil - clock) / .45 : 0;
+  if (!reduced) glitch(bi);
+  drawFooter(t);
+}
+
+function tick(now) {
+  const dt = Math.min(.1, (now - last) / 1000 || 0);
+  last = now;
+  if (!paused) {
+    clock += dt * (reduced ? .3 : 1);
+    mx += (tmx - mx) * .04; my += (tmy - my) * .04;
+    if (dt > 0) fps += (1 / dt - fps) * .05;
+    if (clock - sceneStart > CFG.sceneSeconds) {
+      burstUntil = clock + .45;
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      build();
+      sceneStart = clock;
+    }
+    frame++;
+    render(clock);
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ───────────── 入力 ───────────── */
+addEventListener('resize', () => { resize(); if (paused) render(clock); });
+addEventListener('pointermove', e => { tmx = e.clientX / W; tmy = e.clientY / H; });
+cv.addEventListener('click', () => { reseed(); if (paused) render(clock); });
+addEventListener('keydown', e => {
+  if (e.key === ' ') { paused = !paused; e.preventDefault(); }
+  else if (e.key === 's' || e.key === 'S') {
+    cv.toBlob(b => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = `procedural-${seed.toString(16)}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+  } else if (e.key === 'i' || e.key === 'I') document.body.classList.toggle('inverted');
+  else if (e.key === 'r' || e.key === 'R') reseed();
+});
+
+/* ───────────── 起動 ───────────── */
+const fontsReady = Promise.all([
+  document.fonts.load(`900 40px ${F_JP}`, CFG.glyphs.join('') + CFG.faculty + CFG.name),
+  document.fonts.load(`700 20px ${F_JP}`, CFG.statement.join('')),
+  document.fonts.load(`400 20px ${F_JP}`, CORPUS_JP + TOKENS.join('')),
+  document.fonts.load(`40px ${F_LAT}`, 'PROCEDURAL'),
+  document.fonts.load(`700 20px ${F_MONO}`, '0123456789')
+]).catch(() => {});
+Promise.race([fontsReady, new Promise(r => setTimeout(r, 3000))]).then(() => {
+  resize();
+  requestAnimationFrame(tick);
+});
+})();
+</script>
+</body>
+</html>
